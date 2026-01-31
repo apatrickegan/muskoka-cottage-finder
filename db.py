@@ -77,6 +77,9 @@ def _init_tables(conn: sqlite3.Connection):
             bedrooms TEXT,
             bathrooms TEXT,
             sqft TEXT,
+            acreage TEXT,
+            frontage TEXT,
+            garage TEXT,
             lake TEXT,
             waterfront INTEGER DEFAULT 0,
             exclusive INTEGER DEFAULT 0,
@@ -249,7 +252,8 @@ def upsert_listing(listing_data: Dict) -> tuple:
             conn.execute('''
                 UPDATE listings SET
                     price = ?, price_numeric = ?, bedrooms = ?, bathrooms = ?,
-                    sqft = ?, lake = ?, waterfront = ?, exclusive = ?,
+                    sqft = ?, acreage = ?, frontage = ?, garage = ?,
+                    lake = ?, waterfront = ?, exclusive = ?,
                     listing_url = ?, description = ?, last_seen = ?, status = ?,
                     raw_data = ?
                 WHERE id = ?
@@ -259,6 +263,9 @@ def upsert_listing(listing_data: Dict) -> tuple:
                 listing_data.get('bedrooms'),
                 listing_data.get('bathrooms'),
                 listing_data.get('sqft'),
+                listing_data.get('acreage'),
+                listing_data.get('frontage'),
+                listing_data.get('garage'),
                 listing_data.get('lake'),
                 1 if listing_data.get('waterfront') else 0,
                 1 if listing_data.get('exclusive') else 0,
@@ -276,9 +283,9 @@ def upsert_listing(listing_data: Dict) -> tuple:
             conn.execute('''
                 INSERT INTO listings (
                     id, address, price, price_numeric, bedrooms, bathrooms,
-                    sqft, lake, waterfront, exclusive, source_url, listing_url,
-                    description, first_seen, last_seen, status, raw_data
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    sqft, acreage, frontage, garage, lake, waterfront, exclusive, 
+                    source_url, listing_url, description, first_seen, last_seen, status, raw_data
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 listing_id,
                 listing_data.get('address'),
@@ -287,6 +294,9 @@ def upsert_listing(listing_data: Dict) -> tuple:
                 listing_data.get('bedrooms'),
                 listing_data.get('bathrooms'),
                 listing_data.get('sqft'),
+                listing_data.get('acreage'),
+                listing_data.get('frontage'),
+                listing_data.get('garage'),
                 listing_data.get('lake'),
                 1 if listing_data.get('waterfront') else 0,
                 1 if listing_data.get('exclusive') else 0,

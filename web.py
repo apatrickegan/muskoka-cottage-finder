@@ -242,7 +242,10 @@ DASHBOARD_TEMPLATE = '''
                         {% if l.bedrooms %}{{ l.bedrooms }} bed{% endif %}
                         {% if l.bathrooms %} · {{ l.bathrooms }} bath{% endif %}
                         {% if l.sqft %} · {{ l.sqft }} sqft{% endif %}
-                        {% if l.description %}<br>{{ l.description[:100] }}{% endif %}
+                        {% if l.acreage %} · {{ l.acreage }}{% endif %}
+                        {% if l.frontage %} · {{ l.frontage }} frontage{% endif %}
+                        {% if l.garage %} · {{ l.garage }} garage{% endif %}
+                        {% if l.description %}<br><em>{{ l.description[:150] }}</em>{% endif %}
                     </div>
                 </div>
                 <div>

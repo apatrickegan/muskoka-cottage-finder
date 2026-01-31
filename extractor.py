@@ -30,14 +30,17 @@ EXTRACTION_PROMPT = '''Extract all real estate listings from this webpage conten
 For each listing found, extract:
 - address: Full address or location description
 - price: Listed price (keep original format like "$2,450,000")
-- bedrooms: Number of bedrooms
-- bathrooms: Number of bathrooms  
+- bedrooms: Number of bedrooms (e.g., "4" or "4+1")
+- bathrooms: Number of bathrooms (e.g., "3" or "2.5")
 - sqft: Square footage if available
+- acreage: Lot size in acres if available (e.g., "2.5 acres")
+- frontage: Water frontage in feet if available (e.g., "150 ft")
+- garage: Garage info if available (e.g., "2-car", "detached", "boathouse")
 - lake: Which lake (Lake Muskoka, Lake Joseph, Lake Rosseau, etc.)
 - waterfront: true if waterfront property, false otherwise
 - exclusive: true if marked as "exclusive", "off-market", "pocket listing", or "private listing"
 - listing_url: URL to the specific listing if different from source
-- description: Brief description (max 200 chars)
+- description: Brief description of the property (max 200 chars) - include key features like style, views, amenities
 
 Return a JSON object with a "listings" array. If no listings found, return {"listings": []}.
 Only include actual property listings, not agent profiles or general content.
