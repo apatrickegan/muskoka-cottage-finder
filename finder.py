@@ -44,11 +44,20 @@ CONFIG_PATH = Path(__file__).parent / 'config.json'
 
 
 def load_config() -> Dict:
-    """Load configuration."""
+    """Load configuration. Merges config.json with config.local.json if exists."""
+    config = {}
     if CONFIG_PATH.exists():
         with open(CONFIG_PATH) as f:
-            return json.load(f)
-    return {}
+            config = json.load(f)
+    
+    # Load local config (for API keys, not committed to git)
+    local_path = CONFIG_PATH.parent / 'config.local.json'
+    if local_path.exists():
+        with open(local_path) as f:
+            local_config = json.load(f)
+            config.update(local_config)
+    
+    return config
 
 
 class MuskokaCottageFinder:
