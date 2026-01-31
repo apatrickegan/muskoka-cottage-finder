@@ -117,9 +117,19 @@ def _init_tables(conn: sqlite3.Connection):
 
 
 def generate_listing_id(address: str, source_url: str) -> str:
-    """Generate unique ID for a listing."""
-    normalized = f"{(address or '').lower().strip()}|{source_url.lower().strip()}"
-    return hashlib.md5(normalized.encode()).hexdigest()[:16]
+    """Generate unique ID for a listing based on address only (dedupe across sites)."""
+    # Normalize address for deduplication across different sources
+    addr = (address or '').lower().strip()
+    # Remove common variations
+    addr = addr.replace(',', '').replace('.', '').replace('-', ' ')
+    addr = ' '.join(addr.split())  # Normalize whitespace
+    
+    if addr:
+        # Use address only for ID - same property from different sites will match
+        return hashlib.md5(addr.encode()).hexdigest()[:16]
+    else:
+        # No address - use source URL to keep separate
+        return hashlib.md5(source_url.lower().encode()).hexdigest()[:16]
 
 
 def generate_blog_id(post_url: str) -> str:
