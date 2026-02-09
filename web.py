@@ -1,298 +1,240 @@
 #!/usr/bin/env python3
 """
-web.py - Web dashboard for MuskokaCottageFinder
-Password-protected listing viewer.
+web.py - Web interface for MuskokaCottageFinder
+View listings, add notes, and get email notifications.
 """
 
 import os
-import json
-import hashlib
-import secrets
-from functools import wraps
-from datetime import datetime, timedelta
+import sqlite3
+from datetime import datetime
 from pathlib import Path
+from flask import Flask, render_template, request, jsonify, send_from_directory
+import subprocess
 
-from flask import Flask, render_template_string, request, redirect, url_for, session, jsonify
+app = Flask(__name__, 
+            template_folder='templates',
+            static_folder='static')
 
-# Local imports
-from db import get_listings, get_new_blog_posts_since, get_active_urls, get_connection
+DB_PATH = Path(__file__).parent / "data" / "listings.db"
+PHOTOS_PATH = Path(__file__).parent / "data" / "photos"
+DEFAULT_PHOTO = "/static/egan-team-logo.svg"
 
-app = Flask(__name__)
-app.secret_key = secrets.token_hex(32)
-
-# Load credentials from config
-CONFIG_PATH = Path(__file__).parent / 'config.json'
-LOCAL_CONFIG_PATH = Path(__file__).parent / 'config.local.json'
-
-def load_web_config():
-    config = {}
-    if CONFIG_PATH.exists():
-        with open(CONFIG_PATH) as f:
-            config = json.load(f)
-    if LOCAL_CONFIG_PATH.exists():
-        with open(LOCAL_CONFIG_PATH) as f:
-            config.update(json.load(f))
-    return config.get('web', {})
-
-WEB_CONFIG = load_web_config()
-USERNAME = WEB_CONFIG.get('username', 'admin')
-# Hash the password for comparison
-PASSWORD_HASH = hashlib.sha256(WEB_CONFIG.get('password', 'muskoka2026').encode()).hexdigest()
+# Email settings (using gog CLI)
+NOTIFY_EMAIL = "patrick.egan@royallepage.ca"
 
 
-def login_required(f):
-    @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if not session.get('logged_in'):
-            return redirect(url_for('login'))
-        return f(*args, **kwargs)
-    return decorated_function
+def get_db():
+    """Get database connection."""
+    conn = sqlite3.connect(str(DB_PATH))
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    error = None
-    if request.method == 'POST':
-        username = request.form.get('username', '')
-        password = request.form.get('password', '')
-        password_hash = hashlib.sha256(password.encode()).hexdigest()
+def send_email_notification(listing_address: str, note: str, created_by: str):
+    """Send email notification when a note is added."""
+    try:
+        subject = f"New Note on Listing: {listing_address}"
+        body = f"""A new note has been added to a listing in MuskokaCottageFinder.
+
+Listing: {listing_address}
+Note: {note}
+Added by: {created_by or 'Anonymous'}
+Time: {datetime.now().strftime('%Y-%m-%d %H:%M')}
+
+View all listings: https://muskoka.patrickegan.com
+"""
+        # Use gog CLI to send email
+        env = os.environ.copy()
+        env['GOG_KEYRING_PASSWORD'] = 'clawdbot2026'
+        env['GOG_ACCOUNT'] = 'patrick.egan@royallepage.ca'
         
-        if username == USERNAME and password_hash == PASSWORD_HASH:
-            session['logged_in'] = True
-            session['username'] = username
-            return redirect(url_for('dashboard'))
+        result = subprocess.run([
+            'gog', 'gmail', 'send',
+            '--to', NOTIFY_EMAIL,
+            '--subject', subject,
+            '--body', body
+        ], env=env, capture_output=True, text=True, timeout=30)
+        
+        if result.returncode == 0:
+            print(f"Email sent: {subject}")
         else:
-            error = 'Invalid credentials'
-    
-    return render_template_string(LOGIN_TEMPLATE, error=error)
+            print(f"Email failed: {result.stderr}")
+    except Exception as e:
+        print(f"Email notification error: {e}")
 
 
-@app.route('/logout')
-def logout():
-    session.clear()
-    return redirect(url_for('login'))
+def parse_price(price_str):
+    """Extract numeric price from string like '$1,234,567'."""
+    if not price_str:
+        return None
+    import re
+    numbers = re.sub(r'[^\d]', '', str(price_str))
+    return int(numbers) if numbers else None
 
 
 @app.route('/')
-@login_required
-def dashboard():
-    listings = get_listings()
+def index():
+    """Main listing view."""
+    conn = get_db()
     
-    # Deduplicate by normalized address
-    seen_addresses = {}
-    unique_listings = []
-    for l in listings:
-        addr = (l.get('address') or '').lower().strip()
-        if addr and addr in seen_addresses:
-            # Keep the one with more data or higher price
-            continue
-        if addr:
-            seen_addresses[addr] = True
-        unique_listings.append(l)
+    # Get filter parameters
+    lake = request.args.get('lake', '')
+    status = request.args.get('status', '')
+    exclusive_only = request.args.get('exclusive', '')
+    sort_by = request.args.get('sort', 'newest')  # Default: newest first
     
-    # Sort by price descending
-    unique_listings.sort(key=lambda x: x.get('price_numeric') or 0, reverse=True)
+    query = '''
+        SELECT l.*, 
+               (SELECT COUNT(*) FROM listing_notes WHERE listing_id = l.id) as note_count
+        FROM listings l
+        WHERE l.status != 'removed'
+    '''
+    params = []
     
-    # Get blog posts from last 7 days
-    since = (datetime.utcnow() - timedelta(days=7)).isoformat()
-    blogs = get_new_blog_posts_since(since)
+    if lake:
+        query += ' AND l.lake LIKE ?'
+        params.append(f'%{lake}%')
+    if status:
+        query += ' AND l.status = ?'
+        params.append(status)
+    if exclusive_only:
+        query += ' AND l.exclusive = 1'
     
-    # Stats
-    stats = {
-        'total_listings': len(unique_listings),
-        'total_urls': len(get_active_urls()),
-        'exclusives': len([l for l in unique_listings if l.get('exclusive')]),
-        'new_blogs': len(blogs)
+    # Sort options (SQL-based where possible)
+    sort_orders = {
+        'newest': 'l.first_seen DESC',
+        'oldest': 'l.first_seen ASC',
+        'beds_high': 'CAST(l.bedrooms AS INTEGER) DESC',
+        'beds_low': 'CAST(l.bedrooms AS INTEGER) ASC',
     }
     
-    return render_template_string(
-        DASHBOARD_TEMPLATE, 
-        listings=unique_listings, 
-        blogs=blogs,
-        stats=stats
-    )
-
-
-@app.route('/api/listings')
-@login_required
-def api_listings():
-    listings = get_listings()
-    return jsonify(listings)
-
-
-LOGIN_TEMPLATE = '''
-<!DOCTYPE html>
-<html>
-<head>
-    <title>MuskokaCottageFinder - Login</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-        * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
-        body { background: linear-gradient(135deg, #1a5f7a 0%, #159895 100%); min-height: 100vh; display: flex; align-items: center; justify-content: center; margin: 0; }
-        .login-box { background: white; padding: 40px; border-radius: 12px; box-shadow: 0 10px 40px rgba(0,0,0,0.2); width: 100%; max-width: 400px; }
-        h1 { color: #1a5f7a; margin: 0 0 30px; font-size: 24px; text-align: center; }
-        .subtitle { color: #666; text-align: center; margin-bottom: 30px; }
-        input { width: 100%; padding: 14px; margin-bottom: 16px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 16px; }
-        input:focus { outline: none; border-color: #159895; }
-        button { width: 100%; padding: 14px; background: #1a5f7a; color: white; border: none; border-radius: 8px; font-size: 16px; cursor: pointer; font-weight: 600; }
-        button:hover { background: #159895; }
-        .error { background: #ffe0e0; color: #c00; padding: 12px; border-radius: 8px; margin-bottom: 20px; text-align: center; }
-        .icon { font-size: 48px; text-align: center; margin-bottom: 20px; }
-    </style>
-</head>
-<body>
-    <div class="login-box">
-        <div class="icon">🏠</div>
-        <h1>MuskokaCottageFinder</h1>
-        <p class="subtitle">Waterfront Listings Dashboard</p>
-        {% if error %}<div class="error">{{ error }}</div>{% endif %}
-        <form method="post">
-            <input type="text" name="username" placeholder="Username" required autocomplete="username">
-            <input type="password" name="password" placeholder="Password" required autocomplete="current-password">
-            <button type="submit">Sign In</button>
-        </form>
-    </div>
-</body>
-</html>
-'''
-
-DASHBOARD_TEMPLATE = '''
-<!DOCTYPE html>
-<html>
-<head>
-    <title>MuskokaCottageFinder - Dashboard</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <style>
-        * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
-        body { background: #f5f7fa; margin: 0; padding: 20px; }
-        .header { background: linear-gradient(135deg, #1a5f7a 0%, #159895 100%); color: white; padding: 30px; border-radius: 12px; margin-bottom: 30px; }
-        .header h1 { margin: 0 0 10px; }
-        .header p { margin: 0; opacity: 0.9; }
-        .logout { position: absolute; top: 30px; right: 30px; color: white; text-decoration: none; opacity: 0.8; }
-        .logout:hover { opacity: 1; }
-        .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 20px; margin-bottom: 30px; }
-        .stat { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); text-align: center; }
-        .stat-value { font-size: 32px; font-weight: bold; color: #1a5f7a; }
-        .stat-label { color: #666; margin-top: 5px; }
-        .section { background: white; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.08); margin-bottom: 30px; overflow: hidden; }
-        .section-header { padding: 20px; border-bottom: 1px solid #eee; font-weight: 600; font-size: 18px; }
-        .listing { display: grid; grid-template-columns: 1fr auto; gap: 20px; padding: 20px; border-bottom: 1px solid #f0f0f0; align-items: center; }
-        .listing:last-child { border-bottom: none; }
-        .listing:hover { background: #f8fafb; }
-        .listing-address { font-weight: 600; color: #333; margin-bottom: 5px; }
-        .listing-details { color: #666; font-size: 14px; }
-        .listing-price { font-size: 20px; font-weight: bold; color: #1a5f7a; text-align: right; }
-        .listing-lake { font-size: 12px; color: #888; text-align: right; }
-        .tag { display: inline-block; padding: 4px 8px; border-radius: 4px; font-size: 12px; font-weight: 500; margin-left: 8px; }
-        .tag-exclusive { background: #fff3cd; color: #856404; }
-        .tag-new { background: #d4edda; color: #155724; }
-        .tag-waterfront { background: #cce5ff; color: #004085; }
-        .blog { padding: 15px 20px; border-bottom: 1px solid #f0f0f0; }
-        .blog:last-child { border-bottom: none; }
-        .blog a { color: #1a5f7a; text-decoration: none; font-weight: 500; }
-        .blog a:hover { text-decoration: underline; }
-        .blog-source { color: #888; font-size: 13px; margin-top: 5px; }
-        .empty { padding: 40px; text-align: center; color: #888; }
-        @media (max-width: 600px) {
-            .listing { grid-template-columns: 1fr; }
-            .listing-price { text-align: left; margin-top: 10px; }
-        }
-    </style>
-</head>
-<body>
-    <div style="position: relative;">
-        <a href="/logout" class="logout">Logout</a>
-        <div class="header">
-            <h1>🏠 MuskokaCottageFinder</h1>
-            <p>Waterfront Listings Dashboard</p>
-        </div>
-    </div>
+    # Price sorting needs Python (price is stored as string like "$1,234,567")
+    if sort_by in ('price_low', 'price_high'):
+        query += ' ORDER BY l.first_seen DESC'  # Fallback order
+    else:
+        query += f' ORDER BY {sort_orders.get(sort_by, "l.first_seen DESC")}'
     
-    <div class="stats">
-        <div class="stat">
-            <div class="stat-value">{{ stats.total_listings }}</div>
-            <div class="stat-label">Total Listings</div>
-        </div>
-        <div class="stat">
-            <div class="stat-value">{{ stats.total_urls }}</div>
-            <div class="stat-label">Sources Monitored</div>
-        </div>
-        <div class="stat">
-            <div class="stat-value">{{ stats.exclusives }}</div>
-            <div class="stat-label">Exclusives</div>
-        </div>
-        <div class="stat">
-            <div class="stat-value">{{ stats.new_blogs }}</div>
-            <div class="stat-label">New Blog Posts</div>
-        </div>
-    </div>
+    listings = conn.execute(query, params).fetchall()
+    listings = [dict(l) for l in listings]
     
-    <div class="section">
-        <div class="section-header">📋 Listings ({{ listings|length }})</div>
-        {% if listings %}
-            {% for l in listings %}
-            <div class="listing">
-                <div>
-                    <div class="listing-address">
-                        {{ l.address or 'Address Not Available' }}
-                        {% if l.exclusive %}<span class="tag tag-exclusive">EXCLUSIVE</span>{% endif %}
-                        {% if l.waterfront %}<span class="tag tag-waterfront">Waterfront</span>{% endif %}
-                    </div>
-                    <div class="listing-details">
-                        {% if l.bedrooms %}{{ l.bedrooms }} bed{% endif %}
-                        {% if l.bathrooms %} · {{ l.bathrooms }} bath{% endif %}
-                        {% if l.sqft %} · {{ l.sqft }} sqft{% endif %}
-                        {% if l.acreage %} · {{ l.acreage }}{% endif %}
-                        {% if l.frontage %} · {{ l.frontage }} frontage{% endif %}
-                        {% if l.garage %} · {{ l.garage }} garage{% endif %}
-                        {% if l.description %}<br><em>{{ l.description[:150] }}</em>{% endif %}
-                    </div>
-                </div>
-                <div>
-                    <div class="listing-price">{{ l.price or 'Price N/A' }}</div>
-                    <div class="listing-lake">{{ l.lake or 'Muskoka Region' }}</div>
-                </div>
-            </div>
-            {% endfor %}
-        {% else %}
-            <div class="empty">No listings found. Run a scan to populate.</div>
-        {% endif %}
-    </div>
+    # Sort by price in Python (since price is stored as formatted string)
+    if sort_by == 'price_low':
+        listings.sort(key=lambda x: parse_price(x.get('price')) or float('inf'))
+    elif sort_by == 'price_high':
+        listings.sort(key=lambda x: parse_price(x.get('price')) or 0, reverse=True)
     
-    {% if blogs %}
-    <div class="section">
-        <div class="section-header">📝 Recent Blog Posts ({{ blogs|length }})</div>
-        {% for b in blogs %}
-        <div class="blog">
-            <a href="{{ b.post_url }}" target="_blank">{{ b.title }}</a>
-            <div class="blog-source">{{ b.source_url }}</div>
-        </div>
-        {% endfor %}
-    </div>
-    {% endif %}
+    # Get unique lakes for filter
+    lakes = conn.execute(
+        'SELECT DISTINCT lake FROM listings WHERE lake IS NOT NULL ORDER BY lake'
+    ).fetchall()
+    lakes = [l['lake'] for l in lakes]
     
-    <p style="text-align: center; color: #888; margin-top: 40px;">
-        Last updated: {{ now() }} · 
-        <a href="https://github.com/apatrickegan/muskoka-cottage-finder" style="color: #1a5f7a;">GitHub</a>
-    </p>
-</body>
-</html>
-'''
+    conn.close()
+    
+    return render_template('listings.html', 
+                          listings=listings, 
+                          lakes=lakes,
+                          default_photo=DEFAULT_PHOTO,
+                          current_lake=lake,
+                          current_status=status,
+                          exclusive_only=exclusive_only,
+                          current_sort=sort_by)
 
-@app.context_processor
-def utility_processor():
-    def now():
-        return datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')
-    return dict(now=now)
+
+@app.route('/listing/<listing_id>')
+def listing_detail(listing_id):
+    """Single listing detail view."""
+    conn = get_db()
+    
+    listing = conn.execute(
+        'SELECT * FROM listings WHERE id = ?', (listing_id,)
+    ).fetchone()
+    
+    if not listing:
+        return "Listing not found", 404
+    
+    listing = dict(listing)
+    
+    # Get notes
+    notes = conn.execute(
+        'SELECT * FROM listing_notes WHERE listing_id = ? ORDER BY created_at DESC',
+        (listing_id,)
+    ).fetchall()
+    notes = [dict(n) for n in notes]
+    
+    conn.close()
+    
+    return render_template('listing_detail.html', 
+                          listing=listing, 
+                          notes=notes,
+                          default_photo=DEFAULT_PHOTO)
+
+
+@app.route('/api/notes', methods=['POST'])
+def add_note():
+    """Add a note to a listing."""
+    data = request.json
+    listing_id = data.get('listing_id')
+    note = data.get('note', '').strip()
+    created_by = data.get('created_by', '').strip() or 'Anonymous'
+    
+    if not listing_id or not note:
+        return jsonify({'error': 'Missing listing_id or note'}), 400
+    
+    conn = get_db()
+    
+    # Get listing address for email
+    listing = conn.execute(
+        'SELECT address FROM listings WHERE id = ?', (listing_id,)
+    ).fetchone()
+    
+    if not listing:
+        conn.close()
+        return jsonify({'error': 'Listing not found'}), 404
+    
+    # Insert note
+    conn.execute('''
+        INSERT INTO listing_notes (listing_id, note, created_by, created_at)
+        VALUES (?, ?, ?, ?)
+    ''', (listing_id, note, created_by, datetime.utcnow().isoformat()))
+    conn.commit()
+    conn.close()
+    
+    # Send email notification
+    send_email_notification(listing['address'], note, created_by)
+    
+    return jsonify({'success': True, 'message': 'Note added'})
+
+
+@app.route('/api/notes/<listing_id>')
+def get_notes(listing_id):
+    """Get all notes for a listing."""
+    conn = get_db()
+    notes = conn.execute(
+        'SELECT * FROM listing_notes WHERE listing_id = ? ORDER BY created_at DESC',
+        (listing_id,)
+    ).fetchall()
+    conn.close()
+    
+    return jsonify([dict(n) for n in notes])
+
+
+@app.route('/photos/<path:filename>')
+def serve_photo(filename):
+    """Serve listing photos."""
+    return send_from_directory(PHOTOS_PATH, filename)
+
+
+@app.route('/static/<path:filename>')
+def serve_static(filename):
+    """Serve static files."""
+    static_path = Path(__file__).parent / 'static'
+    return send_from_directory(static_path, filename)
 
 
 if __name__ == '__main__':
-    import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--port', type=int, default=5050)
-    parser.add_argument('--host', default='127.0.0.1')
-    args = parser.parse_args()
+    # Create templates and static directories
+    (Path(__file__).parent / 'templates').mkdir(exist_ok=True)
+    (Path(__file__).parent / 'static').mkdir(exist_ok=True)
     
-    print(f"Starting MuskokaCottageFinder Dashboard on {args.host}:{args.port}")
-    print(f"Login: {USERNAME} / [password from config]")
-    app.run(host=args.host, port=args.port, debug=False)
+    app.run(host='0.0.0.0', port=8081, debug=True)

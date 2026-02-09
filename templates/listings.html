@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MuskokaCottageFinder - Listings</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .listing-card:hover { transform: translateY(-2px); box-shadow: 0 10px 25px rgba(0,0,0,0.15); }
+        .exclusive-badge { background: linear-gradient(135deg, #f59e0b, #d97706); }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <header class="bg-blue-900 text-white py-4 shadow-lg">
+        <div class="container mx-auto px-4">
+            <h1 class="text-2xl font-bold">🏠 MuskokaCottageFinder</h1>
+            <p class="text-blue-200 text-sm">Exclusive & Off-Market Listings</p>
+        </div>
+    </header>
+
+    <main class="container mx-auto px-4 py-6">
+        <!-- Filters -->
+        <div class="bg-white rounded-lg shadow p-4 mb-6">
+            <form method="GET" class="flex flex-wrap gap-4 items-end">
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Lake</label>
+                    <select name="lake" class="border rounded px-3 py-2 w-48">
+                        <option value="">All Lakes</option>
+                        {% for lake in lakes %}
+                        <option value="{{ lake }}" {% if lake == current_lake %}selected{% endif %}>{{ lake }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Status</label>
+                    <select name="status" class="border rounded px-3 py-2 w-40">
+                        <option value="">All</option>
+                        <option value="active" {% if current_status == 'active' %}selected{% endif %}>Active</option>
+                        <option value="price_change" {% if current_status == 'price_change' %}selected{% endif %}>Price Change</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Sort By</label>
+                    <select name="sort" class="border rounded px-3 py-2 w-44">
+                        <option value="price_low" {% if current_sort == 'price_low' %}selected{% endif %}>Price: Low → High</option>
+                        <option value="price_high" {% if current_sort == 'price_high' %}selected{% endif %}>Price: High → Low</option>
+                        <option value="newest" {% if current_sort == 'newest' or not current_sort %}selected{% endif %}>Newest First</option>
+                        <option value="oldest" {% if current_sort == 'oldest' %}selected{% endif %}>Oldest First</option>
+                        <option value="beds_high" {% if current_sort == 'beds_high' %}selected{% endif %}>Beds: Most</option>
+                        <option value="beds_low" {% if current_sort == 'beds_low' %}selected{% endif %}>Beds: Least</option>
+                    </select>
+                </div>
+                <div class="flex items-center">
+                    <input type="checkbox" name="exclusive" id="exclusive" value="1" {% if exclusive_only %}checked{% endif %} class="mr-2">
+                    <label for="exclusive" class="text-sm font-medium text-gray-700">Exclusives Only</label>
+                </div>
+                <button type="submit" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">
+                    Filter
+                </button>
+                <a href="/" class="text-gray-600 hover:text-gray-800 px-4 py-2">Clear</a>
+            </form>
+        </div>
+
+        <!-- Stats -->
+        <div class="mb-4 text-gray-600">
+            Found <strong>{{ listings|length }}</strong> listings
+        </div>
+
+        <!-- Listings Grid -->
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {% for listing in listings %}
+            <div class="listing-card bg-white rounded-lg shadow overflow-hidden transition-all duration-200 cursor-pointer"
+                 onclick="window.location='/listing/{{ listing.id }}'">
+                <!-- Photo -->
+                <div class="h-48 bg-gray-200 relative">
+                    {% if listing.photo_path %}
+                    <img src="/photos/{{ listing.photo_path }}" 
+                         alt="{{ listing.address }}" 
+                         class="w-full h-full object-cover"
+                         onerror="this.src='{{ default_photo }}'">
+                    {% else %}
+                    <img src="{{ default_photo }}" 
+                         alt="Egan Team" 
+                         class="w-full h-full object-contain p-4 bg-white">
+                    {% endif %}
+                    
+                    {% if listing.exclusive %}
+                    <span class="absolute top-2 left-2 exclusive-badge text-white text-xs font-bold px-2 py-1 rounded">
+                        🔒 EXCLUSIVE
+                    </span>
+                    {% endif %}
+                    
+                    {% if listing.note_count > 0 %}
+                    <span class="absolute top-2 right-2 bg-blue-500 text-white text-xs font-bold px-2 py-1 rounded">
+                        📝 {{ listing.note_count }}
+                    </span>
+                    {% endif %}
+                </div>
+                
+                <!-- Content -->
+                <div class="p-4">
+                    <div class="text-xl font-bold text-blue-900 mb-1">
+                        {{ listing.price or 'Price TBD' }}
+                    </div>
+                    <h3 class="font-semibold text-gray-800 text-sm mb-2 truncate">
+                        {{ listing.address or 'Address Not Available' }}
+                    </h3>
+                    
+                    <div class="flex gap-4 text-sm text-gray-600 mb-2">
+                        {% if listing.bedrooms %}
+                        <span>🛏️ {{ listing.bedrooms }} bed</span>
+                        {% endif %}
+                        {% if listing.bathrooms %}
+                        <span>🚿 {{ listing.bathrooms }} bath</span>
+                        {% endif %}
+                    </div>
+                    
+                    {% if listing.lake %}
+                    <div class="text-sm text-blue-600 mb-2">
+                        🌊 {{ listing.lake }}
+                    </div>
+                    {% endif %}
+                    
+                    {% if listing.brokerage %}
+                    <div class="text-xs text-gray-500">
+                        {{ listing.brokerage }}
+                        {% if listing.agent_name %} • {{ listing.agent_name }}{% endif %}
+                    </div>
+                    {% endif %}
+                    
+                    <div class="text-xs text-gray-400 mt-2">
+                        First seen: {{ listing.first_seen[:10] if listing.first_seen else 'Unknown' }}
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+
+        {% if not listings %}
+        <div class="text-center py-12 text-gray-500">
+            <p class="text-xl">No listings found matching your criteria.</p>
+            <a href="/" class="text-blue-600 hover:underline mt-2 inline-block">Clear filters</a>
+        </div>
+        {% endif %}
+    </main>
+
+    <footer class="bg-gray-800 text-white py-4 mt-8">
+        <div class="container mx-auto px-4 text-center text-sm">
+            <p>© 2026 Egan Team Real Estate • MuskokaCottageFinder</p>
+        </div>
+    </footer>
+</body>
+</html>
