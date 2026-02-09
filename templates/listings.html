@@ -77,11 +77,11 @@
                     <img src="/photos/{{ listing.photo_path }}" 
                          alt="{{ listing.address }}" 
                          class="w-full h-full object-cover"
-                         onerror="this.src='{{ default_photo }}'">
+                         onerror="this.parentElement.innerHTML='<div class=\'w-full h-full flex items-center justify-center bg-gray-100 text-gray-400 text-xs\'>No Photo Available</div>'">
                     {% else %}
-                    <img src="{{ default_photo }}" 
-                         alt="Egan Team" 
-                         class="w-full h-full object-contain p-4 bg-white">
+                    <div class="w-full h-full flex items-center justify-center bg-gray-100 text-gray-400 text-xs">
+                        No Photo Available
+                    </div>
                     {% endif %}
                     
                     {% if listing.exclusive %}
